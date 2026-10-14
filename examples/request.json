@@ -1,0 +1,7 @@
+{
+  "id": "sample-analysis-01",
+  "workspace": "synthetic-operations",
+  "intent": "analysis",
+  "question": "Review the weekly completion and failure metrics and propose a follow-up work ticket.",
+  "action": "create_ticket"
+}

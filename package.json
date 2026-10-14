@@ -1,0 +1,33 @@
+{
+  "name": "structured-agent-runtime",
+  "version": "1.0.0",
+  "description": "Typed AI workflows with persistent context, bounded failure handling, and transactional human approval.",
+  "scripts": {
+    "demo": "tsx src/cli.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src tests",
+    "build": "tsc -p tsconfig.build.json",
+    "check": "npm run typecheck && npm run lint && npm test"
+  },
+  "keywords": [],
+  "type": "module",
+  "dependencies": {
+    "ai": "7.0.139",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "26.6.5",
+    "eslint": "10.12.0",
+    "tsx": "4.23.15",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.71.2",
+    "vitest": "5.0.4"
+  },
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "node": ">=24.0.0 <25"
+  }
+}
