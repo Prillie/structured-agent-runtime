@@ -59,6 +59,18 @@ export class Store {
       )
       .run(run.request.workspace, run.request.id, JSON.stringify(run));
   }
+  private appendContext(run: Run): void {
+    const context = this.context(run.request.workspace);
+    const next = contextSchema.parse({
+      version: context.version + 1,
+      notes: [...context.notes, run.output.summary].slice(-20),
+    });
+    this.db
+      .prepare(
+        "INSERT INTO contexts VALUES (?, ?) ON CONFLICT(workspace) DO UPDATE SET data = excluded.data",
+      )
+      .run(run.request.workspace, JSON.stringify(next));
+  }
   save(run: Run): Run {
     return this.transaction(() => {
       const existing = this.find(run.request.workspace, run.request.id);
@@ -68,18 +80,7 @@ export class Store {
         return existing;
       }
       this.put(run);
-      if (run.status !== "blocked") {
-        const context = this.context(run.request.workspace);
-        const next = contextSchema.parse({
-          version: context.version + 1,
-          notes: [...context.notes, run.output.summary].slice(-20),
-        });
-        this.db
-          .prepare(
-            "INSERT INTO contexts VALUES (?, ?) ON CONFLICT(workspace) DO UPDATE SET data = excluded.data",
-          )
-          .run(run.request.workspace, JSON.stringify(next));
-      }
+      if (run.status === "complete") this.appendContext(run);
       return run;
     });
   }
@@ -95,7 +96,7 @@ export class Store {
       run.status = review.decision === "approve" ? "approved" : "rejected";
       if (review.decision === "approve") {
         if (!run.output.action) throw new Error("No action to approve");
-        // This is the only consequential write. A real dispatcher needs its own idempotency contract.
+        // Approval promotes both the action and its summary in this transaction.
         this.db
           .prepare("INSERT INTO outbox VALUES (?, ?, ?, ?)")
           .run(
@@ -104,6 +105,7 @@ export class Store {
             JSON.stringify(run.output.action),
             principal,
           );
+        this.appendContext(run);
       }
       this.put(run);
       return run;

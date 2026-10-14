@@ -34,12 +34,12 @@ flowchart TD
     H -->|Informational fallback| J
     H -->|Action failure| P[Blocked with no action]
     G --> I{Action requested?}
-    I -->|No| J[Persist informational result]
-    I -->|Yes| K[Persist immutable proposal]
+    I -->|No| J[Persist informational result and canonical context]
+    I -->|Yes| K[Persist provisional proposal]
     K --> L[Human review with proposal digest]
     L --> M{Approve?}
-    M -->|Yes| N[Atomic review and local outbox write]
-    M -->|No| O[Persist rejection]
+    M -->|Yes| N[Atomic approval, context promotion, and outbox write]
+    M -->|No| O[Persist rejected history without context promotion]
 ```
 
 ## Engineering choices
@@ -48,6 +48,7 @@ flowchart TD
 - **Compute before generating.** The metric capability calculates success rates deterministically. The model explains supplied evidence rather than inventing arithmetic. Zod validates input and output, and the runtime rejects citations outside the capability's evidence set. Reference validation does not prove every sentence is factually correct.
 - **Keep model providers replaceable.** A small provider interface supports a deterministic local provider and an AI SDK adapter. The latter accepts provider model objects or AI Gateway model identifiers; routing stays independent of vendor details.
 - **Store context outside the model.** Bounded workspace notes and version numbers persist in SQLite. Each run records the context version it read. A saved request ID replays its result; reusing it with different input is rejected.
+- **Govern memory as well as actions.** Informational results enter canonical context immediately. Consequential proposals remain provisional while pending. Approval promotes the accepted summary into context in the same transaction as the ticket and review state; rejection retains an explicitly rejected run in history without adding its summary to canonical context. Later model calls load only canonical context.
 - **Separate a proposal from permission.** Every supported action requires a human review of the saved proposal digest. Approval expires after 15 minutes. Workspace checks, terminal review states, and a unique outbox key prevent cross-workspace review, approval replay, or duplicate local effects.
 - **Make failures explicit.** Only transient provider errors and deadlines retry, at most three attempts. Informational workflows can return labeled deterministic evidence summaries. An action request that fails generation is blocked with no approvable action.
 - **Keep telemetry narrow.** Hooks report phases, attempt counts, and timing metadata. They omit raw questions, context, model responses, and provider error details. Observer failures cannot change workflow outcomes.
@@ -73,7 +74,7 @@ npm test
 npm run build
 ```
 
-Tests cover routing, real capability arithmetic, strict schema validation, persisted context, request replay, concurrent saves, cross-workspace access, restart recovery, approval integrity, expiration, rejection, duplicate effects across SQLite connections, malformed output, ungrounded references, unrequested actions, retries, deadlines, fallback policy, and telemetry privacy. GitHub Actions runs the checks and build without credentials.
+Tests cover routing, real capability arithmetic, strict schema validation, persisted context, request replay, concurrent saves, cross-workspace access, restart recovery, approval integrity, expiration, rejection, provisional-memory isolation, approved-context promotion, transactional rollback, duplicate effects across SQLite connections, malformed output, ungrounded references, unrequested actions, retries, deadlines, fallback policy, and telemetry privacy. GitHub Actions runs the checks and build without credentials.
 
 ## Layout
 
@@ -95,7 +96,9 @@ This is a standalone engineering showcase, built from scratch with synthetic dat
 
 The local CLI treats the person running it as the reviewer. An HTTP integration must authenticate callers and derive workspace authority on the server before invoking the runtime. The storage layer is trusted internal code, not a public API. Keep the database on durable disk; ephemeral serverless storage is unsuitable.
 
-Approval and ticket insertion share one SQLite transaction. This guarantees a single local outbox record, not exactly-once delivery to an external API. A real dispatcher needs provider idempotency, retries, and reconciliation. Concurrent identical requests can spend inference twice before one canonical result is saved. The context version records a snapshot; it does not serialize model generation across a workspace. Add reservations and stronger context concurrency controls if that becomes a requirement.
+Approval, accepted-summary promotion, and ticket insertion share one SQLite transaction. If any write fails, all three roll back; the proposal remains pending with no new context or ticket. This guarantees a single local outbox record, not exactly-once delivery to an external API. A real dispatcher needs provider idempotency, retries, and reconciliation. Concurrent identical requests can spend inference twice before one canonical result is saved. The context version records a snapshot; it does not serialize model generation across a workspace. Add reservations and stronger context concurrency controls if that becomes a requirement.
+
+Existing SQLite files are preserved. Summaries written to context by earlier versions are not retroactively reclassified.
 
 Input length, context size, attempt count, response token budget, and per-call duration are bounded. A provider that ignores cancellation may continue its own work after the runtime times out. Output validation and capability isolation reduce risk; they are not a general prompt-injection defense.
 

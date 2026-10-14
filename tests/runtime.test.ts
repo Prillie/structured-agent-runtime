@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { Runtime } from "../src/runtime.js";
 import { Store } from "../src/store.js";
 import { RetryableError, SyntheticProvider } from "../src/providers.js";
@@ -115,10 +116,15 @@ describe("context and idempotency", () => {
     expect(a).toEqual(b);
     expect(store.context("demo").version).toBe(1);
   });
-  it("retains context and a pending proposal across a process restart", async () => {
+  it("retains canonical context and a provisional proposal across a process restart", async () => {
     const dir = mkdtempSync(join(tmpdir(), "agent-runtime-"));
     const file = join(dir, "test.sqlite");
     const first = new Store(file);
+    await new Runtime(first, new SyntheticProvider()).run(
+      { ...request, id: "informational" },
+      principal,
+    );
+    const canonical = first.context("demo");
     const input = { ...request, action: "create_ticket" };
     const run = await new Runtime(first, new SyntheticProvider()).run(
       input,
@@ -127,7 +133,7 @@ describe("context and idempotency", () => {
     first.close();
     const second = new Store(file);
     try {
-      expect(second.context("demo").version).toBe(1);
+      expect(second.context("demo")).toEqual(canonical);
       expect(second.find("demo", request.id)).toEqual(run);
       new Runtime(second, new SyntheticProvider()).review(
         {
@@ -139,6 +145,10 @@ describe("context and idempotency", () => {
         principal,
       );
       expect(second.tickets("demo")).toHaveLength(1);
+      expect(second.context("demo")).toEqual({
+        version: 2,
+        notes: [...canonical.notes, run.output.summary],
+      });
     } finally {
       second.close();
       rmSync(dir, { recursive: true, force: true });
@@ -165,12 +175,118 @@ describe("human approval", () => {
     const { store, runtime, run, review } = await pending();
     expect(run.status).toBe("pending");
     expect(store.tickets("demo")).toEqual([]);
+    expect(store.context("demo")).toEqual({ version: 0, notes: [] });
     expect(runtime.review(review, principal).status).toBe("approved");
     expect(store.tickets("demo")).toHaveLength(1);
     expect(store.tickets("demo")[0]).toMatchObject({
       action: run.output.action,
       reviewer: "reviewer",
     });
+    expect(store.context("demo")).toEqual({
+      version: 1,
+      notes: [run.output.summary],
+    });
+  });
+  it("keeps provisional and rejected summaries out of subsequent model context", async () => {
+    const seen: GenerationInput[] = [];
+    const synthetic = new SyntheticProvider();
+    const { runtime, store } = setup(
+      fake(async (input, signal) => {
+        seen.push(input);
+        const output = (await synthetic.generate(input, signal)) as Record<
+          string,
+          unknown
+        >;
+        return { ...output, summary: `Summary for ${input.request.id}` };
+      }),
+    );
+    const proposal = await runtime.run(
+      { ...request, action: "create_ticket" },
+      principal,
+    );
+    await runtime.run({ ...request, id: "before-review" }, principal);
+    expect(seen[1]?.context).toEqual({ version: 0, notes: [] });
+    const canonical = store.context("demo");
+    runtime.review(
+      {
+        workspace: "demo",
+        requestId: request.id,
+        digest: proposal.digest,
+        decision: "reject",
+      },
+      principal,
+    );
+    expect(store.find("demo", request.id)?.status).toBe("rejected");
+    expect(store.context("demo")).toEqual(canonical);
+    await runtime.run({ ...request, id: "after-rejection" }, principal);
+    expect(seen[2]?.context).toEqual(canonical);
+  });
+  it("supplies an approved summary to the next workflow", async () => {
+    const seen: GenerationInput[] = [];
+    const synthetic = new SyntheticProvider();
+    const { runtime } = setup(
+      fake(async (input, signal) => {
+        seen.push(input);
+        return synthetic.generate(input, signal);
+      }),
+    );
+    const proposal = await runtime.run(
+      { ...request, action: "create_ticket" },
+      principal,
+    );
+    runtime.review(
+      {
+        workspace: "demo",
+        requestId: request.id,
+        digest: proposal.digest,
+        decision: "approve",
+      },
+      principal,
+    );
+    await runtime.run({ ...request, id: "after-approval" }, principal);
+    expect(seen[1]?.context).toEqual({
+      version: 1,
+      notes: [proposal.output.summary],
+    });
+  });
+  it("rolls back approval, outbox, and memory together when promotion fails", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agent-memory-"));
+    const file = join(dir, "test.sqlite");
+    const store = new Store(file);
+    const db = new DatabaseSync(file);
+    try {
+      const runtime = new Runtime(store, new SyntheticProvider());
+      const run = await runtime.run(
+        { ...request, action: "create_ticket" },
+        principal,
+      );
+      db.exec(
+        "CREATE TRIGGER fail_context BEFORE INSERT ON contexts BEGIN SELECT RAISE(ABORT, 'Memory unavailable'); END",
+      );
+      const review = {
+        workspace: "demo",
+        requestId: request.id,
+        digest: run.digest,
+        decision: "approve",
+      };
+      expect(() => runtime.review(review, principal)).toThrow(
+        "Memory unavailable",
+      );
+      expect(store.find("demo", request.id)?.status).toBe("pending");
+      expect(store.tickets("demo")).toEqual([]);
+      expect(store.context("demo")).toEqual({ version: 0, notes: [] });
+      db.exec("DROP TRIGGER fail_context");
+      runtime.review(review, principal);
+      expect(store.tickets("demo")).toHaveLength(1);
+      expect(store.context("demo")).toEqual({
+        version: 1,
+        notes: [run.output.summary],
+      });
+    } finally {
+      db.close();
+      store.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
   it("rejects a changed proposal digest and preserves pending state", async () => {
     const { runtime, review, store } = await pending();
@@ -179,6 +295,7 @@ describe("human approval", () => {
     ).toThrow("match");
     expect(store.find("demo", request.id)?.status).toBe("pending");
     expect(store.tickets("demo")).toHaveLength(0);
+    expect(store.context("demo")).toEqual({ version: 0, notes: [] });
   });
   it("rejects expired approvals", async () => {
     let now = 0;
@@ -186,12 +303,14 @@ describe("human approval", () => {
     now = 15 * 60_000;
     expect(() => runtime.review(review, principal)).toThrow("expired");
     expect(store.tickets("demo")).toHaveLength(0);
+    expect(store.context("demo")).toEqual({ version: 0, notes: [] });
   });
   it("cannot approve a rejected proposal", async () => {
     const { runtime, review, store } = await pending();
     runtime.review({ ...review, decision: "reject" }, principal);
     expect(() => runtime.review(review, principal)).toThrow("pending");
     expect(store.tickets("demo")).toEqual([]);
+    expect(store.context("demo")).toEqual({ version: 0, notes: [] });
   });
   it("prevents replay and duplicate local effects across two connections", async () => {
     const dir = mkdtempSync(join(tmpdir(), "agent-approval-"));
@@ -214,6 +333,10 @@ describe("human approval", () => {
       ra.review(review, principal);
       expect(() => rb.review(review, principal)).toThrow("pending");
       expect(b.tickets("demo")).toHaveLength(1);
+      expect(b.context("demo")).toEqual({
+        version: 1,
+        notes: [run.output.summary],
+      });
     } finally {
       a.close();
       b.close();
