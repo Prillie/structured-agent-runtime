@@ -1,6 +1,6 @@
 # Structured Agent Runtime
 
-A compact TypeScript system for turning a structured request into an evidence-backed result or a human-reviewed action. It separates model generation, deterministic capabilities, persistent context, and authority to act.
+A production-style TypeScript agent runtime that turns a structured request into an evidence-backed result or a human-reviewed action. It separates model generation, deterministic capabilities, persistent context, and authority to act.
 
 The demo analyzes synthetic workflow metrics and proposes a work ticket. **A model can propose a ticket; only an explicit human review can create it.** Nothing is sent to an external service.
 
