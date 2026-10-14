@@ -4,6 +4,7 @@
   "description": "Typed AI workflows with persistent context, bounded failure handling, and transactional human approval.",
   "scripts": {
     "demo": "tsx src/cli.ts",
+    "demo:api": "node --env-file=.env --import tsx src/server.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src tests",

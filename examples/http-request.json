@@ -1,0 +1,6 @@
+{
+  "id": "http-analysis-01",
+  "intent": "analysis",
+  "question": "Analyze weekly workflow metrics and propose a work ticket.",
+  "action": "create_ticket"
+}

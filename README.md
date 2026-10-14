@@ -18,6 +18,36 @@ The CLI displays the result and exact proposed action. Type `approve` at the rev
 
 The example uses a stable request ID. Running it again replays the saved result. Edit `examples/request.json` and use a **new ID** for a new workflow. Change `intent` to `research` or `drafting` to exercise the other capabilities. Set `action` to `none` for an informational result.
 
+## Tiny HTTP example
+
+The working endpoint in [`src/http.ts`](src/http.ts) shows how an authenticated server derives authority before calling the runtime. It uses Node's built-in HTTP server and the synthetic provider; no UI, external service, or model key is required.
+
+Copy `.env.example` to `.env` and set `API_DEMO_TOKEN` to a random secret of at least 32 characters. Start the API:
+
+```sh
+npm run demo:api
+```
+
+In a second terminal, send the supplied synthetic request without copying the token into the command or terminal output:
+
+```sh
+node --env-file=.env --input-type=module -e '
+  import { readFileSync } from "node:fs";
+  const response = await fetch("http://127.0.0.1:3000/runs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${process.env.API_DEMO_TOKEN}` },
+    body: readFileSync("examples/http-request.json", "utf8"),
+  });
+  console.log(response.status, await response.json());
+'
+```
+
+`POST /runs` verifies the bearer credential with a constant-time digest comparison, then resolves a fixed demo principal and workspace from server-owned state. The strict JSON schema rejects client-supplied workspace, identity, and approval fields. Requests have a 16 KB body limit and a five-second request timeout; input errors return generic messages without credentials or internal errors.
+
+The example returns `200` for an informational result and `202` for a pending proposal. Pending summaries do not enter canonical context, and this endpoint never approves or executes a proposed action. Runs persist in `.data/http-demo.sqlite`. Use a new request ID for new input; conflicting reuse returns `409`.
+
+This is a single-client local authentication example, bound to the loopback interface. In a real application, replace the demo credential lookup with the host's verified session and server-side tenant membership lookup. Human review would require a separately authorized review flow; this example intentionally has no review endpoint.
+
 ## Architecture
 
 ```mermaid
@@ -86,6 +116,8 @@ src/
   runtime.ts        Orchestration, validation, deadlines, failure policy
   store.ts          SQLite context, run state, review, and local outbox
   cli.ts            Working local demo with explicit review
+  http.ts           Authenticated POST /runs boundary
+  server.ts         Local HTTP demo startup
 tests/
 examples/request.json
 ```
@@ -94,7 +126,7 @@ examples/request.json
 
 This is a standalone engineering showcase, built from scratch with synthetic data. It demonstrates production-oriented patterns in a small local runtime; it is not a hosted service.
 
-The local CLI treats the person running it as the reviewer. An HTTP integration must authenticate callers and derive workspace authority on the server before invoking the runtime. The storage layer is trusted internal code, not a public API. Keep the database on durable disk; ephemeral serverless storage is unsuitable.
+The local CLI treats the person running it as the reviewer. The HTTP example demonstrates server-derived authority for one demo client; a production integration must authenticate callers and resolve workspace membership through its own identity system. The storage layer is trusted internal code, not a public API. Keep the database on durable disk; ephemeral serverless storage is unsuitable.
 
 Approval, accepted-summary promotion, and ticket insertion share one SQLite transaction. If any write fails, all three roll back; the proposal remains pending with no new context or ticket. This guarantees a single local outbox record, not exactly-once delivery to an external API. A real dispatcher needs provider idempotency, retries, and reconciliation. Concurrent identical requests can spend inference twice before one canonical result is saved. The context version records a snapshot; it does not serialize model generation across a workspace. Add reservations and stronger context concurrency controls if that becomes a requirement.
 
